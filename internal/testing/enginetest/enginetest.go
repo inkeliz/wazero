@@ -506,6 +506,89 @@ wasm stack trace:
 	}
 }
 
+func RunTestModuleEngine_Memory(t *testing.T, et EngineTester) {
+	e := et.NewEngine(wasm.Features20220419)
+
+	wasmPhrase := "Well, that'll be the day when you say goodbye."
+	wasmPhraseSize := uint32(len(wasmPhrase))
+
+	// Define a basic function which defines one parameter. This is used to test results when incorrect arity is used.
+	one := uint32(1)
+	m := &wasm.Module{
+		TypeSection:     []*wasm.FunctionType{{}},
+		FunctionSection: []wasm.Index{0},
+		MemorySection:   &wasm.Memory{Min: 1, Cap: 1, Max: 1},
+		DataSection: []*wasm.DataSegment{
+			{
+				OffsetExpression: nil, // passive
+				Init:             []byte(wasmPhrase),
+			},
+		},
+		DataCountSection: &one,
+		CodeSection: []*wasm.Code{{Body: []byte{
+			wasm.OpcodeI32Const, 0, // target offset
+			wasm.OpcodeI32Const, 0, // source offset
+			wasm.OpcodeI32Const, byte(wasmPhraseSize), // len
+			wasm.OpcodeMiscPrefix, wasm.OpcodeMiscMemoryInit, 0, 0, // segment 0, memory 0
+			wasm.OpcodeEnd,
+		}}}}
+	// Compile the Wasm into wazeroir
+	err := e.CompileModule(testCtx, m)
+	require.NoError(t, err)
+
+	// Assign memory to the module instance
+	memory := wasm.NewMemoryInstance(m.MemorySection)
+	module := &wasm.ModuleInstance{
+		Name:          t.Name(),
+		Memory:        memory,
+		DataInstances: []wasm.DataInstance{m.DataSection[0].Init},
+	}
+
+	// To use the function, we first need to add it to a module.
+	init := getFunctionInstance(m, 0, module)
+	addFunction(module, "init", init)
+
+	// Compile the module
+	me, err := e.NewModuleEngine(module.Name, m, nil, module.Functions, nil, nil)
+	init.Module.Engine = me
+	require.NoError(t, err)
+	linkModuleToEngine(module, me)
+
+	buf, ok := memory.Read(testCtx, 0, wasmPhraseSize)
+	require.True(t, ok)
+	require.Equal(t, make([]byte, wasmPhraseSize), buf)
+
+	// initialize the memory using Wasm
+	_, err = me.Call(testCtx, module.CallCtx, init)
+	require.NoError(t, err)
+
+	// We expect the same []byte read earlier to now include the phrase in wasm.
+	require.Equal(t, wasmPhrase, string(buf))
+
+	hostPhrase := "Goodbye, cruel world. I'm off to join the circus." // Intentionally slightly longer.
+	hostPhraseSize := uint32(len(hostPhrase))
+
+	// Copy over the buffer, which should stop short.
+	copy(buf, hostPhrase)
+	require.Equal(t, "Goodbye, cruel world. I'm off to join the circ", string(buf))
+
+	// Append to the buffer we got from Wasm
+	buf = append(buf, 'u', 's', '.')
+	require.Equal(t, hostPhrase, string(buf))
+
+	// Re-initialize the memory in wasm
+	_, err = me.Call(testCtx, module.CallCtx, init)
+	require.NoError(t, err)
+
+	// When we read back the memory from the host, it should have the initial phrase followed by zeros.
+	// The append above should not have been allowed to affect the underlying memory.
+	buf2, ok := memory.Read(testCtx, 0, hostPhraseSize)
+	require.True(t, ok)
+	// TODO: this fails because `buf = append(buf, 'u', 's', '.')` overran the bounds from Memory.Read, resulting
+	// in the last few bytes ("us.") being visible here.
+	require.Equal(t, wasmPhrase+string([]byte{0, 0, 0}), string(buf2))
+}
+
 const (
 	wasmFnName               = "wasm_div_by"
 	hostFnName               = "host_div_by"
