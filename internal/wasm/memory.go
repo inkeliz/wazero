@@ -6,8 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"reflect"
-	"unsafe"
 
 	"github.com/tetratelabs/wazero/api"
 )
@@ -209,11 +207,10 @@ func (m *MemoryInstance) Grow(_ context.Context, delta uint32) (result uint32) {
 		return 0xffffffff // = -1 in signed 32-bit integer.
 	} else if newPages > m.Cap { // grow the memory.
 		m.Buffer = append(m.Buffer, make([]byte, MemoryPagesToBytesNum(delta))...)
-		m.Cap = newPages
+		m.Cap = memoryBytesNumToPages(uint64(cap(m.Buffer)))
 		return currentPages
 	} else { // We already have the capacity we need.
-		sp := (*reflect.SliceHeader)(unsafe.Pointer(&m.Buffer))
-		sp.Len = int(MemoryPagesToBytesNum(newPages))
+		m.Buffer = m.Buffer[:int(MemoryPagesToBytesNum(newPages))]
 		return currentPages
 	}
 }
